@@ -197,33 +197,19 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         return filterRewriteOptimizationContext.tryOptimize(ctx, this::incrementBucketDocCount, segmentMatchAll(context, ctx));
     }
 
+    @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         if (valuesSource == null) {
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
 
-        final SortedNumericDocValues values = valuesSource.longValues(ctx);
-        final NumericDocValues singleton = DocValues.unwrapSingleton(values);
-
-        if (singleton != null) {
-            // Optimized path for single-valued fields
-            return new LeafBucketCollectorBase(sub, values) {
-                @Override
-                public void collect(int doc, long owningBucketOrd) throws IOException {
-                    if (singleton.advanceExact(doc)) {
-                        long value = singleton.longValue();
-                        collectValue(sub, doc, owningBucketOrd, value);
-                    }
-                }
-            };
-        }
-
-        // Original path for multi-valued fields
+        SortedNumericDocValues values = valuesSource.longValues(ctx);
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
                 if (values.advanceExact(doc)) {
                     int valuesCount = values.docValueCount();
+
                     long previousRounded = Long.MIN_VALUE;
                     for (int i = 0; i < valuesCount; ++i) {
                         long value = values.nextValue();
@@ -232,25 +218,20 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                         if (rounded == previousRounded) {
                             continue;
                         }
-                        collectValue(sub, doc, owningBucketOrd, value);
+                        if (hardBounds == null || hardBounds.contain(rounded)) {
+                            long bucketOrd = bucketOrds.add(owningBucketOrd, rounded);
+                            if (bucketOrd < 0) { // already seen
+                                bucketOrd = -1 - bucketOrd;
+                                collectExistingBucket(sub, doc, bucketOrd);
+                            } else {
+                                collectBucket(sub, doc, bucketOrd);
+                            }
+                        }
                         previousRounded = rounded;
                     }
                 }
             }
         };
-    }
-
-    private void collectValue(LeafBucketCollector sub, int doc, long owningBucketOrd, long value) throws IOException {
-        long rounded = preparedRounding.round(value);
-        if (hardBounds == null || hardBounds.contain(rounded)) {
-            long bucketOrd = bucketOrds.add(owningBucketOrd, rounded);
-            if (bucketOrd < 0) { // already seen
-                bucketOrd = -1 - bucketOrd;
-                collectExistingBucket(sub, doc, bucketOrd);
-            } else {
-                collectBucket(sub, doc, bucketOrd);
-            }
-        }
     }
 
     private String fetchStarTreeCalendarUnit() {
