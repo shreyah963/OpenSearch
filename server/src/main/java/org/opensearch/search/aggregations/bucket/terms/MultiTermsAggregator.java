@@ -396,29 +396,112 @@ public class MultiTermsAggregator extends DeferableBucketAggregator {
                     long owningBucketOrd,
                     int doc
                 ) throws IOException {
+                    int numFields = collectedValues.size();
+
+                    // Handle cases with 2-3 fields using explicit loops since that's the most common use case to avoid recursion overhead
+                    if (numFields <= 3) {
+                        // Edge case: Empty fields collection or fewer than 2 fields
+                        // This shouldn't happen due to API validation, but handle defensively
+                        if (numFields < 2) {
+                            // Just add a bucket with the current composite key (containing any fields processed so far)
+                            long bucketOrd = bucketOrds.add(owningBucketOrd, scratch.bytes().toBytesRef());
+                            collectBucketIfNeeded(bucketOrd, doc);
+                            return;
+                        }
+
+                        // Get values for the first field
+                        List<TermValue<?>> values0 = collectedValues.get(0);
+                        int size0 = values0.size();
+
+                        // Get values for the second field
+                        List<TermValue<?>> values1 = collectedValues.get(1);
+                        int size1 = values1.size();
+
+                        // First level loop - iterate through values of the first field
+                        for (int i = 0; i < size0; i++) {
+                            // Save position for backtracking after processing this value
+                            long position0 = scratch.position();
+                            values0.get(i).writeTo(scratch);
+
+                            // Second level loop - iterate through values of the second field
+                            for (int j = 0; j < size1; j++) {
+                                // Save position for backtracking after processing this value
+                                long position1 = scratch.position();
+                                values1.get(j).writeTo(scratch);
+
+                                if (numFields == 2) {
+                                    // Two fields case - add bucket for this combination
+                                    long bucketOrd = bucketOrds.add(owningBucketOrd, scratch.bytes().toBytesRef());
+                                    collectBucketIfNeeded(bucketOrd, doc);
+                                } else {
+                                    // Three fields case
+                                    List<TermValue<?>> values2 = collectedValues.get(2);
+                                    int size2 = values2.size();
+
+                                    // Third level loop - innermost loop for the three-field case
+                                    for (int k = 0; k < size2; k++) {
+                                        // Save position for backtracking after processing this value
+                                        long position2 = scratch.position();
+                                        values2.get(k).writeTo(scratch);
+
+                                        // Add bucket for this three-field combination
+                                        long bucketOrd = bucketOrds.add(owningBucketOrd, scratch.bytes().toBytesRef());
+                                        collectBucketIfNeeded(bucketOrd, doc);
+
+                                        // Backtrack to try the next value for the third field
+                                        scratch.seek(position2);
+                                    }
+                                }
+
+                                // Backtrack to try the next value for the second field
+                                scratch.seek(position1);
+                            }
+
+                            // Backtrack to try the next value for the first field
+                            scratch.seek(position0);
+                        }
+                    } else {
+                        // Fall back to recursion for more than 3 fields
+                        recursiveGenerateAndCollectCompositeKeys(collectedValues, 0, owningBucketOrd, doc);
+                    }
+                }
+
+                // Helper method to collect bucket if needed
+                private void collectBucketIfNeeded(long bucketOrd, int doc) throws IOException {
+                    if (collectBucketOrds) {
+                        if (bucketOrd < 0) {
+                            bucketOrd = -1 - bucketOrd;
+                            aggregator.collectExistingBucket(sub, doc, bucketOrd);
+                        } else {
+                            aggregator.collectBucket(sub, doc, bucketOrd);
+                        }
+                    }
+                }
+
+                // Recursive implementation for more than 3 fields
+                private void recursiveGenerateAndCollectCompositeKeys(
+                    List<List<TermValue<?>>> collectedValues,
+                    int index,
+                    long owningBucketOrd,
+                    int doc
+                ) throws IOException {
                     if (collectedValues.size() == index) {
                         // Avoid performing a deep copy of the composite key by inlining.
                         long bucketOrd = bucketOrds.add(owningBucketOrd, scratch.bytes().toBytesRef());
-                        if (collectBucketOrds) {
-                            if (bucketOrd < 0) {
-                                bucketOrd = -1 - bucketOrd;
-                                aggregator.collectExistingBucket(sub, doc, bucketOrd);
-                            } else {
-                                aggregator.collectBucket(sub, doc, bucketOrd);
-                            }
-                        }
+                        collectBucketIfNeeded(bucketOrd, doc);
                         return;
                     }
 
+                    // Save current position for backtracking
                     long position = scratch.position();
                     List<TermValue<?>> values = collectedValues.get(index);
                     int numIterations = values.size();
+
                     // For each loop is not done to reduce the allocations done for Iterator objects
                     // once for every field in every doc.
                     for (int i = 0; i < numIterations; i++) {
-                        TermValue<?> value = values.get(i);
-                        value.writeTo(scratch); // encode the value
-                        generateAndCollectCompositeKeys(collectedValues, index + 1, owningBucketOrd, doc); // dfs
+                        values.get(i).writeTo(scratch); // encode the value
+                        recursiveGenerateAndCollectCompositeKeys(collectedValues, index + 1, owningBucketOrd, doc); // dfs
                         scratch.seek(position); // backtrack
                     }
                 }
