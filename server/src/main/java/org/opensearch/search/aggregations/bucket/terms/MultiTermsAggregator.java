@@ -402,12 +402,12 @@ public class MultiTermsAggregator extends DeferableBucketAggregator {
                     if (numFields <= 3) {
                         // Edge case: Empty fields collection or fewer than 2 fields
                         // This shouldn't happen due to API validation, but handle defensively
-                        if (numFields < 2) {
+                       /*if (numFields < 2) {
                             // Just add a bucket with the current composite key (containing any fields processed so far)
                             long bucketOrd = bucketOrds.add(owningBucketOrd, scratch.bytes().toBytesRef());
                             collectBucketIfNeeded(bucketOrd, doc);
                             return;
-                        }
+                        }*/
 
                         // Get values for the first field
                         List<TermValue<?>> values0 = collectedValues.get(0);
