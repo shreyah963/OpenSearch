@@ -396,7 +396,7 @@ public class BooleanFieldMapper extends ParametrizedFieldMapper {
             context.doc().add(new StoredField(fieldType().name(), value ? "T" : "F"));
         }
         if (hasDocValues) {
-            context.doc().add(new SortedNumericDocValuesField(fieldType().name(), value ? 1 : 0));
+            context.doc().add(SortedNumericDocValuesField.indexedField(fieldType().name(), value ? 1 : 0));
         } else {
             createFieldNamesField(context);
         }
